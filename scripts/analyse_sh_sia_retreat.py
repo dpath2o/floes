@@ -186,79 +186,95 @@ def hmean(da):
     lon = "longitude" if "longitude" in da.coords else "lon"
     return da.weighted(np.cos(np.deg2rad(da[lat]))).mean((lat,lon),skipna=True)
 
-def section(root,end,year,var,outdir):
-    e  = pd.Timestamp(year = year, month = end.month, day = end.day)
-    s  = e - pd.Timedelta(days = 90)
-    ep = e.replace(year = year-1)
-    sp = ep-pd.Timedelta(days = 90)
+def section(root, end, year, var, outdir):
+    e = pd.Timestamp(year = year, month = end.month, day = end.day)
+    s = e - pd.Timedelta(days = 90)
+
+    ep = e.replace(year = year - 1)
+    sp = ep - pd.Timedelta(days = 90)
+
     d1 = open_ocean(root, s, e)
     d0 = open_ocean(root, sp, ep)
+
     try:
         a1 = hmean(d1[var]).compute()
         a0 = hmean(d0[var]).compute()
     finally:
         d1.close()
         d0.close()
+
     dep = next(
         n for n in ("depth", "deptht", "lev")
         if n in a1.dims
     )
 
-    vals = np.r_[
-        a0.values.ravel(),
-        a1.values.ravel(),
-    ]
+    vals = np.r_[a0.values.ravel(), a1.values.ravel()]
     vals = vals[np.isfinite(vals)]
 
     if vals.size == 0:
         raise ValueError(
-            f"No finite values available for {var} "
-            f"in {year-1}/{year} comparison"
+            f"No finite values available for {var} in {year-1}/{year} comparison"
         )
 
     if var == "thetao":
         cmap = "RdBu_r"
         label = "Potential temperature (°C)"
 
-        lo = float(np.nanpercentile(vals, 2))
-        hi = float(np.nanpercentile(vals, 98))
-        lim = max(abs(lo), abs(hi))
-
-        vmin = -lim
-        vmax = lim
-
+        # tighter manual bounds
+        vmin = -1.0
+        vmax = 2.0
     elif var == "so":
         cmap = "viridis"
         label = "Salinity"
-
+        # keep percentile scaling for salinity
         vmin, vmax = [
             float(x)
             for x in np.nanpercentile(vals, [2, 98])
         ]
-
     else:
-        raise ValueError(
-            f"Unsupported section variable: {var!r}"
-        )
-    plt    = pltmod()
-    fig,ax = plt.subplots(1, 2, figsize = (13,5.8), sharey = True)
-    mesh   = None
+        raise ValueError(f"Unsupported section variable: {var!r}")
     print(
-        f"SECTION {var}: "
-        f"dims={a1.dims}, "
-        f"depth={dep}, "
-        f"range={vmin:.3f}..{vmax:.3f}, "
-        f"cmap={cmap}"
+        f"SECTION {var}: dims={a1.dims}, depth={dep}, "
+        f"data range={float(np.nanmin(vals)):.3f}..{float(np.nanmax(vals)):.3f}, "
+        f"plot range={vmin:.3f}..{vmax:.3f}, cmap={cmap}"
     )
-    for aa,dd,title in ((ax[0],a0,f"{year-1}: same 91-day window"),(ax[1],a1,f"{year}: same 91-day window")):
-        mesh = aa.pcolormesh(pd.DatetimeIndex(dd.time.values), dd[dep].values, dd.transpose(dep,"time").values, shading = "auto", cmap = cmap, vmin = vmin, vmax = vmax)
-        aa.invert_yaxis()
+    plt = pltmod()
+    # stack vertically so time axis can stretch across the full width
+    fig, ax = plt.subplots(
+        2, 1,
+        figsize = (13, 8),
+        sharex = False,
+        sharey = True,
+        constrained_layout = True,
+    )
+    mesh = None
+    for aa, dd, title in (
+        (ax[0], a0, f"{year-1}: same 91-day window"),
+        (ax[1], a1, f"{year}: same 91-day window"),
+    ):
+        mesh = aa.pcolormesh(
+            pd.DatetimeIndex(dd.time.values),
+            dd[dep].values,
+            dd.transpose(dep, "time").values,
+            shading = "auto",
+            cmap = cmap,
+            vmin = vmin,
+            vmax = vmax,
+        )
+        # flip depth axis: shallow at top, deep at bottom
+        aa.set_ylim(float(dd[dep].values.max()), float(dd[dep].values.min()))
         aa.set_title(title)
+        aa.set_ylabel("Depth (m)")
         aa.set_xlabel("Date")
-    ax[0].set_ylabel("Depth (m)")
-    fig.colorbar(mesh, ax = ax, label = label, shrink = .9)
+    fig.colorbar(
+        mesh,
+        ax = ax,
+        label = label,
+        shrink = 0.95,
+        pad = 0.02,
+    )
     fig.suptitle(f"Circum-Antarctic horizontal mean {label.lower()}")
-    out = outdir/f"CMEMS_SH_{var}_0-500m_91day_{year}_vs_{year-1}.png"
+    out = outdir / f"CMEMS_SH_{var}_0-500m_91day_{year}_vs_{year-1}.png"
     fig.savefig(out, dpi = 200, bbox_inches = "tight", facecolor = "white")
     plt.close(fig)
     return out
